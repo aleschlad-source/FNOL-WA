@@ -34,20 +34,14 @@ LOCAL_BACKUP_PATH = "lokalni_zaloha_pracovni.xlsx"
 @st.cache_data
 def load_master_data():
     if os.path.exists(MASTER_DATA_PATH):
-        # Načteme excel, hlavičky cizího zdroje jsou většinou až na 2. řádku (header=1)
-        df_raw = pd.read_excel(MASTER_DATA_PATH, header=1)
+        # Načteme excel, uživatel data vyčistil do 3 sloupců bez definované hlavičky
+        df_raw = pd.read_excel(MASTER_DATA_PATH, header=None)
         
-        # Přejmenování sloupců podle pozic (aby aplikace fungovala s původní logikou)
-        # 0 = Podlaží
-        # 1 = Název objektu (např. SNIM - 01)
-        # 2 = GUID (Archicad IFC ID)
-        # 3 = Místnost (Číslo související zóny)
-        
-        if len(df_raw.columns) >= 4:
+        if len(df_raw.columns) >= 3:
             df = df_raw.rename(columns={
-                df_raw.columns[3]: "Umístění - místnost",
-                df_raw.columns[1]: "Název objektu",
-                df_raw.columns[2]: "IFCGUID"
+                df_raw.columns[0]: "Název objektu",
+                df_raw.columns[1]: "IFCGUID",
+                df_raw.columns[2]: "Umístění - místnost"
             })
         else:
             df = df_raw
@@ -55,6 +49,10 @@ def load_master_data():
         for c in ["Umístění - místnost", "Název objektu", "IFCGUID"]:
             if c not in df.columns:
                 df[c] = ""
+                
+        # Doplnění "NEZNAME" u prázdných místností podle pravidla
+        df["Umístění - místnost"] = df["Umístění - místnost"].fillna("NEZNAME").replace("", "NEZNAME")
+        
         return df
     else:
         st.warning(f"Referenční soubor {MASTER_DATA_PATH} nebyl nalezen. Bude vytvořena prázdná databáze. Pro funkční kaskádu prosím zajistěte, aby byl soubor dostupný ve složce s aplikací.")
