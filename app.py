@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import re
 import io
 import os
 
@@ -18,18 +17,24 @@ st.markdown("""
         font-size: 20px !important;
         font-weight: bold;
         margin-top: 10px;
-        margin-bottom: 10px;
+        margin-bottom: 20px;
     }
     /* Úprava odsazení na mobilech */
     .block-container {
         padding-top: 1rem;
         padding-bottom: 1rem;
     }
+    /* Šedá kurzíva pro dodatečné vysvětlivky v názvech polí */
+    label p em {
+        color: #888888;
+        font-weight: normal;
+        font-size: 0.9em;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 MASTER_DATA_PATH = "zdroj.xlsx"
-LOCAL_BACKUP_PATH = "lokalni_zaloha_pracovni.xlsx"
+LOCAL_BACKUP_PATH = "VYSTUP.xlsx"
 
 @st.cache_data
 def load_master_data():
@@ -71,14 +76,81 @@ if "collected_data" not in st.session_state:
     else:
         st.session_state.collected_data = []
 
-if "vyrobni_cisla" not in st.session_state:
-    st.session_state.vyrobni_cisla = ""
+if "vyrobni_cislo" not in st.session_state:
+    st.session_state.vyrobni_cislo = ""
 
 st.title("FNOL WA ředitelství - Sběr dat")
 st.markdown("Aplikace pro zadávání atributů a majetku pro CAFM přímo na stavbě.")
 
-# --- KASKÁDA (Záznamy) ---
-st.header("1. Umístění a identifikace (Kaskáda)")
+# --- ZPRACOVÁNÍ FORMULÁŘE (FUNKCE) ---
+def pre_validation():
+    required_keys = [
+        "room", "obj", "guid", "typ", "vyrobce", 
+        "dodavatel", "dodavatel_kontakt", "revize_datum", "revize_url", "cinnosti"
+    ]
+    
+    missing = []
+    for k in required_keys:
+        val = st.session_state.get(k)
+        if val is None or str(val).strip() == "":
+            missing.append(k)
+            
+    vc = st.session_state.get("vyrobni_cislo", "").strip()
+    if not vc:
+        missing.append("vyrobni_cislo")
+        
+    return missing, vc
+
+def action_save():
+    missing, vc = pre_validation()
+    
+    dt_val = st.session_state.revize_datum
+    if isinstance(dt_val, datetime.date):
+        rev_datum_str = dt_val.strftime('%d.%m.%Y')
+    else:
+        rev_datum_str = str(dt_val)
+
+    record = {
+        "Místnost": st.session_state.room,
+        "Název objektu": st.session_state.obj,
+        "IFCGUID": st.session_state.guid,
+        "Typ": st.session_state.typ,
+        "Výrobní číslo": vc,
+        "Výrobce": st.session_state.vyrobce,
+        "Dodavatel": st.session_state.dodavatel,
+        "Kontakt dodavatele": st.session_state.dodavatel_kontakt,
+        "Datum revize": rev_datum_str,
+        "Odkaz revize": st.session_state.revize_url,
+        "Činnosti": st.session_state.cinnosti,
+        "Datum vyplnění": datetime.datetime.now().strftime('%d.%m.%Y'),
+        "Čas vyplnění": datetime.datetime.now().strftime('%H:%M:%S')
+    }
+    st.session_state.collected_data.append(record)
+        
+    # Záloha do lokálního souboru
+    try:
+        df_export = pd.DataFrame(st.session_state.collected_data)
+        df_export.to_excel(LOCAL_BACKUP_PATH, index=False)
+    except Exception as e:
+        print(f"Nepodařilo se zálohovat: {e}")
+
+    # Vymazání pouze výrobního čísla
+    st.session_state.vyrobni_cislo = ""
+
+def submit_callback():
+    missing, vc = pre_validation()
+    if missing:
+        st.session_state.form_error = "Chyba: Některá povinná pole chybí! Zkontrolujte i doplňující data úplně dole."
+    else:
+        action_save()
+        st.session_state.form_success = f"Úspěšně uloženo pro výrobní číslo: {vc}! (Pole vymazáno)"
+        if 'form_error' in st.session_state:
+            del st.session_state['form_error']
+
+
+# --- ČÁST 1. KASKÁDA A VÝROBNÍ ČÍSLO (NAHOŘE) ---
+st.header("1. Identifikace a štítkování")
+st.markdown("Pro interakci na stavbě – nejdůležitější blok nahoře. Místnost, objekt, GUID a sériové číslo.")
 
 room_options = [""] + sorted(list(df_master["Umístění - místnost"].dropna().astype(str).unique()))
 selected_room = st.selectbox("Umístění - místnost *", options=room_options, key="room")
@@ -103,132 +175,59 @@ if selected_room and selected_object:
 
 selected_guid = st.selectbox("IFCGUID *", options=guid_options, key="guid")
 
-# --- FORMULÁŘ (Doplňující data) ---
-st.header("2. Doplňující data")
+# Změna u výrobního čísla
+st.text_input("Výrobní číslo * — *Sériové číslo, případně jiné relevantní pořadové číslo. Zadejte NA, pokud žádné číslo neobsahuje.*", key="vyrobni_cislo")
 
-st.text_input("Kód *", key="kod")
-st.text_input("Typ *", key="typ")
 
-# Speciální pole pro výrobní čísla
-st.text_area("Výrobní číslo (více čísel oddělte novým řádkem nebo čárkou) *", key="vyrobni_cisla")
-
-st.text_input("Výrobce *", key="vyrobce")
-st.text_input("Dodavatel (ne zhotovitel) *", key="dodavatel")
-st.text_input("Dodavatel - osoba, email, tel. číslo *", key="dodavatel_kontakt")
-
-st.date_input("Datum výchozí revize/kontroly *", value=None, key="revize_datum")
-st.text_input("č. výchozí revize/kontroly (odkaz na CDE) *", key="revize_url")
-st.text_area("Prováděné pravidelné činnosti a jejich periody *", key="cinnosti")
-
-st.markdown("### Checklist dokumentů *")
-# Checklist zobrazen klasicky pod sebou pro bezproblémové fungování na mobilu
-st.selectbox("Návod v ČJ", ["Ano", "Ne"], index=1, key="chk_navod")
-st.selectbox("Instruktáž uživatelů", ["Ano", "Ne"], index=1, key="chk_instruktaz")
-st.selectbox("Školení techniků", ["Ano", "Ne"], index=1, key="chk_skoleni")
-st.selectbox("Prohlášení o shodě", ["Ano", "Ne"], index=1, key="chk_shoda")
-st.selectbox("Certifikát školitele", ["Ano", "Ne"], index=1, key="chk_certifikat")
-
-st.write("---")
-
-# --- ZPRACOVÁNÍ FORMULÁŘE ---
-
-def pre_validation():
-    required_keys = [
-        "room", "obj", "guid", "kod", "typ", "vyrobce", 
-        "dodavatel", "dodavatel_kontakt", "revize_datum", "revize_url", "cinnosti"
-    ]
-    
-    missing = []
-    for k in required_keys:
-        val = st.session_state.get(k)
-        if val is None or str(val).strip() == "":
-            missing.append(k)
-            
-    vys_cisla_raw = st.session_state.get("vyrobni_cisla", "")
-    vcs = [vc.strip() for vc in re.split(r'[\n,]+', vys_cisla_raw) if vc.strip()]
-    
-    if not vcs:
-        missing.append("vyrobni_cisla (čísla nenalezena)")
-        
-    return missing, vcs
-
-def action_save():
-    missing, vcs = pre_validation()
-    
-    for vc in vcs:
-        dt_val = st.session_state.revize_datum
-        if isinstance(dt_val, datetime.date):
-            rev_datum_str = dt_val.strftime('%d.%m.%Y')
-        else:
-            rev_datum_str = str(dt_val)
-
-        record = {
-            "Místnost": st.session_state.room,
-            "Název objektu": st.session_state.obj,
-            "IFCGUID": st.session_state.guid,
-            "Kód": st.session_state.kod,
-            "Typ": st.session_state.typ,
-            "Výrobní číslo": vc,
-            "Výrobce": st.session_state.vyrobce,
-            "Dodavatel": st.session_state.dodavatel,
-            "Kontakt dodavatele": st.session_state.dodavatel_kontakt,
-            "Datum revize": rev_datum_str,
-            "Odkaz revize": st.session_state.revize_url,
-            "Činnosti": st.session_state.cinnosti,
-            "Návod v ČJ": st.session_state.chk_navod,
-            "Prohlášení o shodě": st.session_state.chk_shoda,
-            "Instruktáž": st.session_state.chk_instruktaz,
-            "Certifikát školitele": st.session_state.chk_certifikat,
-            "Školení techniků": st.session_state.chk_skoleni,
-            "Čas pořízení": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-        st.session_state.collected_data.append(record)
-        
-    # Záloha do lokálního souboru
-    try:
-        df_export = pd.DataFrame(st.session_state.collected_data)
-        df_export.to_excel(LOCAL_BACKUP_PATH, index=False)
-    except Exception as e:
-        print(f"Nepodařilo se zálohovat: {e}")
-
-    # Vymazání pouze výrobních čísel 
-    st.session_state.vyrobni_cisla = ""
-
-def submit_callback():
-    missing, vcs = pre_validation()
-    if missing:
-        st.session_state.form_error = "Chyba: Některá povinná pole chybí! Doplňte všechna pole se symbolem hvězdičky (*)."
-    else:
-        action_save()
-        st.session_state.form_success = f"Úspěšně uloženo {len(vcs)} položek! Data zůstala pro další zadávání, pole 'Výrobní číslo' bylo smazáno."
-        if 'form_error' in st.session_state:
-            del st.session_state['form_error']
-
+# --- TLAČÍTKO SUBMIT ---
 st.button("ULOŽIT ZÁZNAM", type="primary", on_click=submit_callback)
 
-# Zobrazení notifikací z callbacku
+# Zobrazení notifikací z uložení PŘÍMO POD tlačítkem
 if 'form_error' in st.session_state:
     st.error(st.session_state.form_error)
 if 'form_success' in st.session_state:
     st.success(st.session_state.form_success)
-    # Po zobrazení smazat, ať nezůstává po dalším reloadu
+    # Po zobrazení smazat, ať nezůstává úspech po dalším např. napsání písmenka
     del st.session_state['form_success']
 
-# --- EXPORT ---
+
+# --- HISTORIE A EXPORT (POD TLAČÍTKEM) ---
 if st.session_state.collected_data:
     st.write("---")
-    st.subheader(f"Zatím nasbíráno: {len(st.session_state.collected_data)} záznamů")
+    st.subheader(f"Historie zadaných prvků ({len(st.session_state.collected_data)})")
     
     df_export = pd.DataFrame(st.session_state.collected_data)
+    
+    # Zobrazení klíčových dat rovnou na displeji, nejnovější záznamy nahoře
+    ukazka_df = df_export[["Datum vyplnění", "Čas vyplnění", "Místnost", "Název objektu", "Výrobní číslo"]].iloc[::-1]
+    st.dataframe(ukazka_df, use_container_width=True, hide_index=True)
     
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         df_export.to_excel(writer, index=False, sheet_name='NasbiranaData')
         
     st.download_button(
-        label="📥 EXPORTOVAT DO EXCELU (Všechny záznamy)",
+        label="📥 STÁHNOUT EXCEL VYSTUP",
         data=buffer.getvalue(),
-        file_name=f"export_cafm_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        file_name=f"VYSTUP_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="secondary"
     )
+
+st.write("---")
+
+# --- ČÁST 2. OBECNÁ DATA (DOLE) ---
+st.header("2. Doplňující data")
+st.markdown("Vyplňte pouze při změně typu prvku – hodnoty zůstávají trvale zapamatovány pro další ukládání.")
+
+st.text_input("Typ * — *Produktový název výrobku nebo zařízení*", key="typ")
+st.text_input("Výrobce * — *Konkrétní výrobce prvku nebo zařízení*", key="vyrobce")
+st.text_input("Dodavatel (ne zhotovitel) * — *Dodavatel dílčí části*", key="dodavatel")
+st.text_input("Kontakt * — *Jméno, telefonní číslo, email*", key="dodavatel_kontakt")
+
+st.date_input("Datum výchozí revize/kontroly *", value=None, key="revize_datum")
+st.text_input("č. výchozí revize/kontroly (odkaz na CDE) * — *Číslo výchozí revize nebo případně odkaz na CDE*", key="revize_url")
+
+cinnosti_opts = ["REVIZE se neprovádí"] + [f"{m} měsíců" for m in range(3, 63, 3)]
+st.selectbox("Prováděné pravidelné činnosti a jejich periody *", options=cinnosti_opts, key="cinnosti")
+
